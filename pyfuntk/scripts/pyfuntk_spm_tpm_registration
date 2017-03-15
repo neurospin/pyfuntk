@@ -1,0 +1,207 @@
+#! /usr/bin/env python
+##########################################################################
+# NSAp - Copyright (C) CEA, 2013 - 2017
+# Distributed under the terms of the CeCILL-B license, as published by
+# the CEA-CNRS-INRIA. Refer to the LICENSE file or to
+# http://www.cecill.info/licences/Licence_CeCILL-B_V1-en.html
+# for details.
+##########################################################################
+
+# System import
+from __future__ import print_function
+import argparse
+import os
+import shutil
+from datetime import datetime
+import json
+from pprint import pprint
+
+# Bredala import
+try:
+    import bredala
+    bredala.USE_PROFILER = False
+    bredala.register("pyfuntk.stats.utils",
+                     names=["ungzip_file", "ungzip_list_of_files"])
+    bredala.register("pyfuntk.preproc.registration",
+                     names=["spm_normalize"])
+    bredala.register("pyconnectome.utils.segtools",
+                     names=["bet2"])
+except:
+    pass
+
+# Package import
+from pyfuntk import __version__ as version
+from pyfuntk import DEFAULT_SPM_STANDALONE_PATH
+from pyfuntk.stats.utils import ungzip_file
+from pyfuntk.stats.utils import  ungzip_list_of_files
+from pyfuntk.preproc.registration import spm_normalize
+
+# Pyconnectome import
+from pyconnectome import DEFAULT_FSL_PATH
+
+
+# Parameters to keep trace
+__hopla__ = ["runtime", "inputs", "outputs"]
+
+
+# Script documentation
+doc = """
+SPM tissue probability map registration
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Perform the SPM unified registration.
+
+Command:
+
+python $HOME/git/pyfuntk/pyfuntk/scripts/pyfuntk_spm_tpm_registration \
+    -v 2 \
+    -s test \
+    -o /volatile/nsap/recalage_cathy/results \
+    -i /volatile/nsap/recalage_cathy/T1W_gado.nii.gz \
+    -t /i2bm/local/spm12/tpm/TPM.nii \
+    -x /volatile/nsap/recalage_cathy/mask_lesion.nii.gz /volatile/nsap/recalage_cathy/mask_necrosis.nii.gz \
+    -c /etc/fsl/5.0/fsl.sh
+
+python $HOME/git/pyfuntk/pyfuntk/scripts/pyfuntk_spm_tpm_registration \
+    -v 2 \
+    -s test_newseg \
+    -o /volatile/nsap/recalage_cathy/results \
+    -i /volatile/nsap/recalage_cathy/T1W_gado.nii.gz \
+    -t /i2bm/local/spm12/tpm/TPM.nii \
+    -n \
+    -b \
+    -f 0.45 \
+    -x /volatile/nsap/recalage_cathy/mask_lesion.nii.gz /volatile/nsap/recalage_cathy/mask_necrosis.nii.gz \
+    -c /etc/fsl/5.0/fsl.sh
+"""
+
+
+def is_file(filearg):
+    """ Type for argparse - checks that file exists but does not open.
+    """
+    if not os.path.isfile(filearg):
+        raise argparse.ArgumentError(
+            "The file '{0}' does not exist!".format(filearg))
+    return filearg
+
+
+def is_directory(dirarg):
+    """ Type for argparse - checks that directory exists.
+    """
+    if not os.path.isdir(dirarg):
+        raise argparse.ArgumentError(
+            "The directory '{0}' does not exist!".format(dirarg))
+    return dirarg
+
+
+parser = argparse.ArgumentParser(description=doc)
+parser.add_argument(
+    "-v", "--verbose", dest="verbose", type=int, choices=[0, 1, 2], default=0,
+    help="increase the verbosity level: 0 silent, [1, 2] verbose.")
+parser.add_argument(
+    "-e", "--erase", dest="erase", action="store_true",
+    help="if activated, clean the result folder if already created.")
+parser.add_argument(
+    "-o", "--outdir", dest="outdir", metavar="PATH", type=is_directory,
+    help="the analysis output directory.")
+parser.add_argument(
+    "-d", "--spmbin", dest="spmbin", type=is_file,
+    help="path to the SPM standalone file.")
+parser.add_argument(
+    "-s", "--sid", dest="sid", required=True,
+    help="the subject identifier.")
+parser.add_argument(
+    "-i", "--inputfile", dest="inputfile", type=is_file,
+    required=True, help="the input MRI volume.")
+parser.add_argument(
+    "-t", "--tpmfile", dest="tpmfile", type=is_file,
+    required=True, help="the path to the SPM Tissue Probabilty Map file.")
+parser.add_argument(
+    "-n", "--newsegment", dest="newsegment", action="store_true",
+    help="if set, use the NewSegment routine and generate Dartel inputs.")
+parser.add_argument(
+    "-b", "--brainextract", dest="brainextract", action="store_true",
+    help="if set, use the BET2 routine to segment the subject brain.")
+parser.add_argument(
+    "-f", "--brainthr", dest="brainthr", type=float, default=0.5,
+    help="the BET2 fractional intensity threshold (0->1).")
+parser.add_argument(
+    "-x", "--extrafiles", dest="extrafiles", type=is_file, nargs="*",
+    help="list of files to apply transform to.")
+parser.add_argument(
+    "-c", "--fslconfig", dest="fslconfig", type=is_file,
+    help="path to the FSL configuration file.")
+args = parser.parse_args()
+inputs = vars(args)
+verbose = inputs.pop("verbose")
+
+
+"""
+First construct the subject working directory and check its existance on
+the file system.
+"""
+tool = "pyfuntk_spm_tpm_registration"
+timestamp = datetime.now().isoformat()
+tool_version = version
+spmbin = args.spmbin or DEFAULT_SPM_STANDALONE_PATH
+fslconfig = args.fslconfig or DEFAULT_FSL_PATH
+params = locals()
+runtime = dict([(name, params[name])
+               for name in ("tool", "tool_version", "spmbin", "timestamp",
+                            "fslconfig")])
+outputs = None
+subjdir = os.path.join(inputs["outdir"], inputs["sid"])
+if inputs["erase"] and os.path.isdir(subjdir):
+    shutil.rmtree(subjdir)
+if not os.path.isdir(subjdir):
+    os.mkdir(subjdir)
+
+
+"""
+Step 1: UnZip Image Files
+"""
+inputfile = ungzip_file(
+    fname=inputs["inputfile"],
+    prefix="u",
+    outdir=subjdir)
+extrafiles = ungzip_list_of_files(
+    files=inputs["extrafiles"] or [],
+    prefix="u",
+    outdir=subjdir)
+
+
+"""
+Step 2: Image registration & segmentation
+"""
+(deformation_file, normalized_file, normalized_extra_files,
+ dartel_files) = spm_normalize(
+    datafile=inputfile,
+    tpm_file=inputs["tpmfile"],
+    outdir=subjdir,
+    with_segmentation=inputs["newsegment"],
+    extract_brain=inputs["brainextract"],
+    extract_brain_thr=inputs["brainthr"],
+    extra_files=extrafiles,
+    spmbin=spmbin,
+    fslconfig=fslconfig)
+
+
+"""
+Update the outputs and save them and the inputs in a 'logs' directory.
+"""
+logdir = os.path.join(subjdir, "logs")
+if not os.path.isdir(logdir):
+    os.mkdir(logdir)
+params = locals()
+outputs = dict([(name, params[name])
+               for name in ("deformation_file", "normalized_file",
+                            "dartel_files")])
+for name, final_struct in [("inputs", inputs), ("outputs", outputs),
+                           ("runtime", runtime)]:
+    log_file = os.path.join(logdir, "{0}.json".format(name))
+    with open(log_file, "wt") as open_file:
+        json.dump(final_struct, open_file, sort_keys=True, check_circular=True,
+                  indent=4)
+if verbose > 1:
+    print("[info] Outputs:")
+    pprint(outputs)

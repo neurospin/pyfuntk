@@ -1,0 +1,354 @@
+#! /usr/bin/env python
+##########################################################################
+# NSAp - Copyright (C) CEA, 2013 - 2016
+# Distributed under the terms of the CeCILL-B license, as published by
+# the CEA-CNRS-INRIA. Refer to the LICENSE file or to
+# http://www.cecill.info/licences/Licence_CeCILL-B_V1-en.html
+# for details.
+##########################################################################
+
+# System import
+from __future__ import print_function
+import argparse
+import os
+import shutil
+from datetime import datetime
+import json
+from pprint import pprint
+
+# Bredala import
+try:
+    import bredala
+    bredala.USE_PROFILER = False
+    bredala.register("pyfuntk.stats.model",
+                     names=["spm_model_specification", "spm_first_level"])
+    bredala.register("pyfuntk.stats.utils",
+                     names=["get_onsets", "normalize_array",
+                            "ungzip_list_of_files", "ungzip_file",
+                            "erode_mask"])
+    bredala.register("pyfuntk.stats.covars",
+                     names=["extra_covars", "update_rpfile"])
+    bredala.register("pyfreesurfer.conversions.volconvs",
+                     names=["mri_binarize", "mri_convert"])
+    # bredala.register("nipype.interfaces.base",
+    #                  names=["BaseInterface.run"])
+except:
+    pass
+
+# Package import
+from pyfuntk import __version__ as version
+from pyfuntk import DEFAULT_SPM_STANDALONE_PATH
+from pyfuntk.stats.model import spm_model_specification
+from pyfuntk.stats.model import spm_first_level
+from pyfuntk.stats.utils import ungzip_list_of_files
+from pyfuntk.stats.utils import ungzip_file
+from pyfuntk.stats.utils import normalize_array
+from pyfuntk.stats.covars import extra_covars
+from pyfuntk.stats.covars import update_rpfile
+
+# PyFreeSurfer import
+from pyfreesurfer.wrapper import FSWrapper
+from pyfreesurfer import DEFAULT_FREESURFER_PATH
+
+
+# Parameters to keep trace
+__hopla__ = ["runtime", "inputs", "outputs"]
+
+
+# Script documentation
+doc = """
+SPM First Level
+~~~~~~~~~~~~~~~
+
+Perform a functional SPM first level analysis.
+
+Steps:
+
+1: UnZip Image Files.
+2: Extract covariates of non-interest.
+3: Update/Normalize Motion Parameters.
+4: SPM Model Specification.
+5: SPM First Level Analysis.
+
+Command:
+
+-n /neurospin/imagen/BL/processed/spm_new_segment/000001441076/u000001441076000001441076s006a1001_seg8.mat \
+
+python $HOME/git/pyfuntk/pyfuntk/scripts/pyfuntk_spm_firstlevel \
+    -v 2 \
+    -s 000001441076 \
+    -i /neurospin/imagen/BL/processed/spm_preprocessing/000001441076/EPI_faces/swau000001441076s002a001.nii.gz \
+    -f /neurospin/imagen/BL/processed/freesurfer \
+    -n /neurospin/imagen/BL/processed/spm_new_segment/000001441076/y_u000001441076000001441076s006a1001.nii.gz \
+    -r /neurospin/imagen/BL/processed/spm_preprocessing/000001441076/EPI_faces/rp_au000001441076s002a001.txt \
+    -b /neurospin/imagen/BL/processed/spm_first_level/000001441076/EPI_faces/onset.txt \
+    -o /volatile/nsap/imagen/1stlevel \
+    -c /volatile/nsap/imagen/1stlevel/contrasts.json \
+    -m /neurospin/imagen/workspace/fmri/scripts/mask_dilated.nii \
+    -t 0.05 \
+    -O Onsets \
+    -C Conditions \
+    -D Durations \
+    -E \; \
+    -T 2.2 \
+    -S 0
+
+python $HOME/git/pyfuntk/pyfuntk/scripts/pyfuntk_spm_firstlevel \
+    -v 2 \
+    -s 000001441076 \
+    -i /neurospin/imagen/BL/processed/spm_preprocessing/000001441076/EPI_stop_signal/swau000001441076s003a001.nii.gz \
+    -f /neurospin/imagen/BL/processed/freesurfer \
+    -n /neurospin/imagen/BL/processed/spm_new_segment/000001441076/y_u000001441076000001441076s006a1001.nii.gz \
+    -r /neurospin/imagen/BL/processed/spm_preprocessing/000001441076/EPI_stop_signal/rp_au000001441076s003a001.txt \
+    -b /neurospin/imagen/BL/processed/spm_first_level/000001441076/EPI_stop_signal/onset.txt \
+    -o /volatile/nsap/imagen/1stlevel \
+    -c /volatile/nsap/imagen/1stlevel/contrasts2.json \
+    -m /neurospin/imagen/workspace/fmri/scripts/mask_dilated.nii \
+    -t 0.05 \
+    -O Onsets \
+    -C Conditions \
+    -D Durations \
+    -E \; \
+    -T 2.2 \
+    -S 0
+
+"""
+
+
+def is_file(filearg):
+    """ Type for argparse - checks that file exists but does not open.
+    """
+    if not os.path.isfile(filearg):
+        raise argparse.ArgumentError(
+            "The file '{0}' does not exist!".format(filearg))
+    return filearg
+
+
+def is_directory(dirarg):
+    """ Type for argparse - checks that directory exists.
+    """
+    if not os.path.isdir(dirarg):
+        raise argparse.ArgumentError(
+            "The directory '{0}' does not exist!".format(dirarg))
+    return dirarg
+
+
+parser = argparse.ArgumentParser(description=doc)
+parser.add_argument(
+    "-v", "--verbose", dest="verbose", type=int, choices=[0, 1, 2], default=0,
+    help="increase the verbosity level: 0 silent, [1, 2] verbose.")
+parser.add_argument(
+    "-e", "--erase", dest="erase", action="store_true",
+    help="if activated, clean the result folder if already created.")
+parser.add_argument(
+    "-o", "--outdir", dest="outdir", metavar="PATH", type=is_directory,
+    help="the analysis output directory.")
+parser.add_argument(
+    "-f", "--fsdir", dest="fsdir", type=is_directory, required=True,
+    help="the FreeSurfer home directory.")
+parser.add_argument(
+    "-d", "--spmbin", dest="spmbin", type=is_file,
+    help="path to the SPM standalone file.")
+parser.add_argument(
+    "-g", "--fsconfig", dest="fsconfig", type=is_file,
+    help="the FreeSurfer configuration file.")
+parser.add_argument(
+    "-s", "--sid", dest="sid", required=True,
+    help="the subject identifier.")
+parser.add_argument(
+    "-c", "--contrasts", dest="contrasts", type=is_file, required=True,
+    help="a JSON file that contains a list of contrasts with each contrast "
+         "being a tuple of the form: ('name', 'stat', [condition list], "
+         "[weight list]).")
+parser.add_argument(
+    "-m", "--maskfile", dest="maskfile", type=is_file, required=True,
+    help="binary mask to constrain the model estimation.")
+parser.add_argument(
+    "-t", "--maskthreshold", dest="maskthreshold", type=float, required=True,
+    help="thresholding for the mask in the model estimation.")
+parser.add_argument(
+    "-n", "--deformationfile", dest="deformationfile", type=is_file,
+    required=True,
+    help="SPM file y_*.nii containing 3 deformation fields for the "
+         "deformation in x, y and z dimension.")
+parser.add_argument(
+    "-b", "--behavfiles", dest="behavfiles", type=is_file, nargs="+",
+    required=True,
+    help="the functionnal series associated behavioral csv files.")
+parser.add_argument(
+    "-O", "--onsetname", dest="onsetname", required=True,
+    help="the name of the column in the `behavioral_data` file containing the "
+         "onsets.")
+parser.add_argument(
+    "-C", "--conditionname", dest="conditionname", required=True,
+    help="the name of the column in the `behavioral_data` file containing the "
+         "conditions.")
+parser.add_argument(
+    "-D", "--durationname", dest="durationname", required=True,
+    help="the name of the column in the `behavioral_data` file containing the "
+         "durations.")
+parser.add_argument(
+    "-E", "--delimiter", dest="delimiter", required=True,
+    help="separator used to split the `behavioral_data` file.")
+parser.add_argument(
+    "-S", "--start", dest="start", type=int, required=True,
+    help="line from which we start reading the `behavioral_data` file.")
+parser.add_argument(
+    "-r", "--rpfile", dest="rpfile", type=is_file, required=True,
+    help="the realignment parameters file.")
+parser.add_argument(
+    "-i", "--fmrisessions", dest="fmrisessions", type=is_file, nargs="+",
+    required=True, help="the 4D functional volume.")
+parser.add_argument(
+    "-T", "--repetitiontime", dest="repetitiontime", type=float, required=True,
+    help="the repetition time in seconds (in seconds).")
+args = parser.parse_args()
+inputs = vars(args)
+verbose = inputs.pop("verbose")
+
+
+"""
+First construct the subject working directory and check its existance on
+the file system.
+"""
+tool = "pyfuntk_spm_firstlevel"
+timestamp = datetime.now().isoformat()
+tool_version = version
+freesurfer_config = args.fsconfig or DEFAULT_FREESURFER_PATH
+spmbin = args.spmbin or DEFAULT_SPM_STANDALONE_PATH
+freesurfer_version = FSWrapper([], freesurfer_config).version
+params = locals()
+runtime = dict([(name, params[name])
+               for name in ("tool", "tool_version", "freesurfer_config",
+                            "freesurfer_version", "spmbin", "timestamp")])
+outputs = None
+subjdir = os.path.join(inputs["outdir"], inputs["sid"])
+subjfsdir = os.path.join(inputs["fsdir"], inputs["sid"])
+if not os.path.isdir(subjfsdir):
+    raise ValueError("'{0}' is not a valid FreeSurfer subject home "
+                     "directory.".format(subjfsdir))
+if inputs["erase"] and os.path.isdir(subjdir):
+    shutil.rmtree(subjdir)
+if not os.path.isdir(subjdir):
+    os.mkdir(subjdir)
+
+
+"""
+Step 1: UnZip Image Files
+"""
+fmrisessions = ungzip_list_of_files(
+    files=inputs["fmrisessions"],
+    prefix="u",
+    outdir=subjdir)
+deformationfile = ungzip_file(
+    fname=inputs["deformationfile"],
+    prefix="u",
+    outdir=subjdir)
+maskfile = ungzip_file(
+    fname=inputs["maskfile"],
+    prefix="u",
+    outdir=subjdir)
+
+
+"""
+Step 2: Extract covariates of non-interest
+"""
+native_wmfile, erode_wmfile, resample_wmfile, wmcovars_file = extra_covars(
+    subjfsdir=subjfsdir,
+    outdir=subjdir,
+    funcfile=fmrisessions[0],
+    deformationfile=deformationfile,
+    iterations=4,
+    mask_label="wm",
+    min_nb_of_voxels=50,
+    nb_covars=3,
+    fsconfig=freesurfer_config,
+    spmbin=spmbin)
+native_vtsfile, erode_vtsfile, resample_vtsfile, vtscovars_file = extra_covars(
+    subjfsdir=subjfsdir,
+    outdir=subjdir,
+    funcfile=fmrisessions[0],
+    deformationfile=deformationfile,
+    iterations=2,
+    mask_label="ventricles",
+    min_nb_of_voxels=50,
+    nb_covars=4,
+    fsconfig=freesurfer_config,
+    spmbin=spmbin)
+
+
+"""
+Step 3: Update/Normalize Motion Parameters
+"""
+completed_rpfile = update_rpfile(
+    rpile=inputs["rpfile"],
+    covars_files=[wmcovars_file, vtscovars_file],
+    outdir=subjdir,
+    add_extra_mvt_reg=True)
+norm_rpfile = normalize_array(
+    filepath=completed_rpfile,
+    outdir=subjdir)
+
+
+"""
+Step 4: SPM Model Specification
+"""
+session_info, model_specifications = spm_model_specification(
+    behavioral_data=inputs["behavfiles"],
+    fmri_sessions=fmrisessions,
+    onset_name=inputs["onsetname"],
+    condition_name=inputs["conditionname"],
+    duration_name=inputs["durationname"],
+    time_repetition=inputs["repetitiontime"],
+    realignment_parameters=norm_rpfile,
+    delimiter=inputs["delimiter"],
+    start=inputs["start"],
+    outdir=subjdir,
+    concatenate_runs=True,
+    high_pass_filter_cutoff=128)
+
+
+"""
+Step 5: SPM First Level Analysis
+"""
+with open(inputs["contrasts"], "rt") as open_file:
+    contrasts = json.load(open_file)
+(RPVimage, beta_images, mask_image, residual_image, spm_mat_file, design_snap,
+ con_images, spmT_images, ess_images, spmF_images) = spm_first_level(
+    session_info=session_info,
+    outdir=subjdir,
+    repetition_time=inputs["repetitiontime"],
+    contrasts=contrasts,
+    mask_image=maskfile,
+    mask_threshold=inputs["maskthreshold"],
+    spmbin=spmbin)
+
+
+"""
+Update the outputs and save them and the inputs in a 'logs' directory.
+"""
+os.remove(deformationfile)
+for path in fmrisessions:
+    os.remove(path)
+logdir = os.path.join(subjdir, "logs")
+if not os.path.isdir(logdir):
+    os.mkdir(logdir)
+params = locals()
+outputs = dict([(name, params[name])
+               for name in ("fmrisessions", "model_specifications",
+                            "norm_rpfile", "wmcovars_file", "vtscovars_file",
+                            "native_wmfile", "erode_wmfile", "resample_wmfile",
+                            "native_vtsfile", "erode_vtsfile",
+                            "resample_vtsfile", "RPVimage", "beta_images",
+                            "mask_image", "residual_image", "spm_mat_file",
+                            "design_snap", "con_images", "spmT_images",
+                            "ess_images", "spmF_images")])
+for name, final_struct in [("inputs", inputs), ("outputs", outputs),
+                           ("runtime", runtime)]:
+    log_file = os.path.join(logdir, "{0}.json".format(name))
+    with open(log_file, "wt") as open_file:
+        json.dump(final_struct, open_file, sort_keys=True, check_circular=True,
+                  indent=4)
+if verbose > 1:
+    print("[info] Outputs:")
+    pprint(outputs)
