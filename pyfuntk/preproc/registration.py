@@ -169,8 +169,12 @@ def spm_normalize(datafile, tpm_file, outdir, with_segmentation=False,
             generated_files_to_compress.append(normalization_outputs[key])
         deformation_file = normalization_outputs["deformation_field"] + ".gz"
         normalized_file = normalization_outputs["normalized_image"] + ".gz"
-        normalized_extra_files = [
-            path + ".gz" for path in normalization_outputs["normalized_files"]]
+        if isinstance(normalization_outputs["normalized_files"], list):
+            normalized_extra_files = [
+                path + ".gz"
+                for path in normalization_outputs["normalized_files"]]
+        else:
+            normalized_extra_files = None
 
     # GZip generated files
     output_files = recursive_gzip(obj=generated_files_to_compress)
