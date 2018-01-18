@@ -108,8 +108,123 @@ def spm_first_level(session_info, outdir, repetition_time, contrasts,
     runtime = interface.run()
     estimate_outputs = runtime.outputs.get()
 
-    # Estimate contrasts of interest
+    # Estimate the contrasts of interest
     interface = spm.EstimateContrast(
+        spm_mat_file=estimate_outputs["spm_mat_file"],
+        contrasts=contrasts,
+        residual_image=estimate_outputs["residual_image"],
+        beta_images=estimate_outputs["beta_images"])
+    runtime = interface.run()
+    contrast_outputs = runtime.outputs.get()
+    os.chdir(cwd)
+
+    # GZip generated files
+    output_files = recursive_gzip(
+        obj=[estimate_outputs["RPVimage"], estimate_outputs["beta_images"],
+             estimate_outputs["mask_image"], estimate_outputs["residual_image"],
+             estimate_outputs["spm_mat_file"]])
+
+    # Encode/convert stat results
+    con_images, spmT_images, ess_images, spmF_images = spm_encoding(
+        con_images=contrast_outputs["con_images"],
+        spmT_images=contrast_outputs["spmT_images"],
+        ess_images=contrast_outputs["ess_images"],
+        spmF_images=contrast_outputs["spmF_images"],
+        contrasts=contrasts,
+        outdir=outdir)
+    output_files += [design_snap, con_images, spmT_images, ess_images,
+                     spmF_images]
+
+    # Remove extra mfile
+    mfile = os.path.join(outdir, "pyscript.m")
+    if os.path.isfile(mfile):
+        os.remove(mfile)
+
+    return output_files
+
+
+def spm_second_level(firstlevel_con_files, contrasts, outdir, mask_image=None,
+                     design="T", spmbin=DEFAULT_SPM_STANDALONE_PATH):
+    """ SPM fMRI Second Level Analysis.
+
+    One Sample T-Test Design: a simple T-Test that looks at a simple mean
+    contrast, i.e. a contrast that shows what the group mean activation of a
+    certain first level contrast is.
+
+    Parameters
+    ----------
+    firstlevel_con_files: list of str
+        the list of first level contrast files.
+    contrasts : list
+        a list of contrasts with each contrast being a tuple of the form:
+        ('name', 'stat', [condition list], [weight list]).
+    outdir: str
+        the destination folder.
+    mask_image: str (optional, default None)
+        image for explicitly masking the analysis.
+    design: str, default 'T'
+        The design matrix type.
+    spmbin: str (optional, default DEFAULT_SPM_STANDALONE_PATH)
+        the SPM standalone file.
+
+    Returns
+    -------
+    RPVimage: str
+        resels per voxel image.
+    beta_images: list of str
+        design parameter estimates.
+    mask_image: str
+        binary mask to constrain estimation.
+    residual_image: str
+        mean-squared image of the residuals.
+    spm_mat_file: str
+        updated SPM mat file.
+    design_snap: str
+        a snapshot of the design matrix.
+    con_files: list of str
+        rename/converted contrast images from a t-contrast.
+    spmT_files: list of str
+        rename/converted stat images from a t-contrast.
+    ess_files: list of str
+        rename/converted contrast images from an F-contrast.
+    spmF_files: list of str
+        rename/converted stat images from an F-contrast.
+    """
+    # Check inputs
+    if design not in ("T"):
+        raise ValueError("Deign '{0}' not yet supported.".format(design))
+
+    # Configuration
+    spm.SPMCommand.set_mlab_paths(
+        matlab_cmd="{0} script ".format(spmbin), use_mcr=True)
+    cwd = os.getcwd()
+    os.chdir(outdir)
+
+    # Generate the design matrix
+    kwargs = {}
+    if mask_image is not None:
+        kwargs["explicit_mask_file"] = mask_image
+    interface = spm.OneSampleTTestDesign(
+        in_files=firstlevel_con_files,
+        threshold_mask_none=True,
+        use_implicit_threshold=True,
+        **kwargs)
+    runtime = interface.run()
+    design_outputs = runtime.outputs.get()
+    design_snap = spm_save_design(
+        mat_file=design_outputs["spm_mat_file"],
+        outdir=outdir)
+
+    # Estimate the parameters of the model
+    interface = spm.EstimateModel(
+        estimation_method={"Classical": 1},
+        spm_mat_file=design_outputs["spm_mat_file"])
+    runtime = interface.run()
+    estimate_outputs = runtime.outputs.get()
+
+    # Estimate the contrasts of interest
+    interface = spm.EstimateContrast(
+        group_contrast=True,
         spm_mat_file=estimate_outputs["spm_mat_file"],
         contrasts=contrasts,
         residual_image=estimate_outputs["residual_image"],
