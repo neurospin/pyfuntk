@@ -26,8 +26,7 @@ from pyconnectome.utils.segtools import bet2
 
 
 def spm_normalize(datafile, tpm_file, outdir, with_segmentation=False,
-                  extract_brain=False, extract_brain_thr=0.5,
-                  extra_files=None,
+                  extract_brain=False, extract_brain_thr=0.5, extra_files=None,
                   spmbin=DEFAULT_SPM_STANDALONE_PATH,
                   fslconfig=DEFAULT_FSL_PATH):
     """ SPM New Segment.
@@ -66,7 +65,7 @@ def spm_normalize(datafile, tpm_file, outdir, with_segmentation=False,
     cwd = os.getcwd()
     os.chdir(outdir)
 
-    # Extract brain if requested
+    # Extract/get brain if requested
     if extract_brain:
         (output, mask_file, mesh_file, outline_file, inskull_mask_file,
          inskull_mesh_file, outskull_mask_file, outskull_mesh_file,

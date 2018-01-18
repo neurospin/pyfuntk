@@ -141,10 +141,14 @@ parser.add_argument(
     "-e", "--erase", dest="erase", action="store_true",
     help="if activated, clean the result folder if already created.")
 parser.add_argument(
+    "-G", "--gzonly", dest="gzonly", action="store_true",
+    help="set this option if you are using only gz files. Be careful as it "
+         "suppress raw input files if it is not the case.")
+parser.add_argument(
     "-o", "--outdir", dest="outdir", metavar="PATH", type=is_directory,
     help="the analysis output directory.")
 parser.add_argument(
-    "-f", "--fsdir", dest="fsdir", type=is_directory, required=True,
+    "-f", "--fsdir", dest="fsdir", type=is_directory,
     help="the FreeSurfer home directory.")
 parser.add_argument(
     "-d", "--spmbin", dest="spmbin", type=is_file,
@@ -161,14 +165,13 @@ parser.add_argument(
          "being a tuple of the form: ('name', 'stat', [condition list], "
          "[weight list]).")
 parser.add_argument(
-    "-m", "--maskfile", dest="maskfile", type=is_file, required=True,
+    "-m", "--maskfile", dest="maskfile", type=is_file,
     help="binary mask to constrain the model estimation.")
 parser.add_argument(
     "-t", "--maskthreshold", dest="maskthreshold", type=float, required=True,
     help="thresholding for the mask in the model estimation.")
 parser.add_argument(
     "-n", "--deformationfile", dest="deformationfile", type=is_file,
-    required=True,
     help="SPM file y_*.nii containing 3 deformation fields for the "
          "deformation in x, y and z dimension.")
 parser.add_argument(
@@ -223,10 +226,13 @@ runtime = dict([(name, params[name])
                             "freesurfer_version", "spmbin", "timestamp")])
 outputs = None
 subjdir = os.path.join(inputs["outdir"], inputs["sid"])
-subjfsdir = os.path.join(inputs["fsdir"], inputs["sid"])
-if not os.path.isdir(subjfsdir):
-    raise ValueError("'{0}' is not a valid FreeSurfer subject home "
-                     "directory.".format(subjfsdir))
+if inputs["fsdir"] is not None:
+    subjfsdir = os.path.join(inputs["fsdir"], inputs["sid"])
+    if not os.path.isdir(subjfsdir):
+        raise ValueError("'{0}' is not a valid FreeSurfer subject home "
+                         "directory.".format(subjfsdir))
+else:
+    subjfsdir = None
 if inputs["erase"] and os.path.isdir(subjdir):
     shutil.rmtree(subjdir)
 if not os.path.isdir(subjdir):
@@ -240,51 +246,66 @@ fmrisessions = ungzip_list_of_files(
     files=inputs["fmrisessions"],
     prefix="u",
     outdir=subjdir)
-deformationfile = ungzip_file(
-    fname=inputs["deformationfile"],
-    prefix="u",
-    outdir=subjdir)
-maskfile = ungzip_file(
-    fname=inputs["maskfile"],
-    prefix="u",
-    outdir=subjdir)
+if inputs["maskfile"] is not None:
+    maskfile = ungzip_file(
+        fname=inputs["maskfile"],
+        prefix="u",
+        outdir=subjdir)
+else:
+    maskfile = None
+if inputs["deformationfile"] is not None:
+    deformationfile = ungzip_file(
+        fname=inputs["deformationfile"],
+        prefix="u",
+        outdir=subjdir)
+else:
+    deformationfile = None
 
 
 """
 Step 2: Extract covariates of non-interest
 """
-native_wmfile, erode_wmfile, resample_wmfile, wmcovars_file = extra_covars(
-    subjfsdir=subjfsdir,
-    outdir=subjdir,
-    funcfile=fmrisessions[0],
-    deformationfile=deformationfile,
-    iterations=4,
-    mask_label="wm",
-    min_nb_of_voxels=50,
-    nb_covars=3,
-    fsconfig=freesurfer_config,
-    spmbin=spmbin)
-native_vtsfile, erode_vtsfile, resample_vtsfile, vtscovars_file = extra_covars(
-    subjfsdir=subjfsdir,
-    outdir=subjdir,
-    funcfile=fmrisessions[0],
-    deformationfile=deformationfile,
-    iterations=2,
-    mask_label="ventricles",
-    min_nb_of_voxels=50,
-    nb_covars=4,
-    fsconfig=freesurfer_config,
-    spmbin=spmbin)
-
+if deformationfile is not None:
+    (native_wmfile, erode_wmfile, resample_wmfile,
+     wmcovars_file) = extra_covars(
+        subjfsdir=subjfsdir,
+        outdir=subjdir,
+        funcfile=fmrisessions[0],
+        deformationfile=deformationfile,
+        iterations=4,
+        mask_label="wm",
+        min_nb_of_voxels=50,
+        nb_covars=3,
+        fsconfig=freesurfer_config,
+        spmbin=spmbin)
+    (native_vtsfile, erode_vtsfile, resample_vtsfile,
+     vtscovars_file) = extra_covars(
+        subjfsdir=subjfsdir,
+        outdir=subjdir,
+        funcfile=fmrisessions[0],
+        deformationfile=deformationfile,
+        iterations=2,
+        mask_label="ventricles",
+        min_nb_of_voxels=50,
+        nb_covars=4,
+        fsconfig=freesurfer_config,
+        spmbin=spmbin)
+else:
+    native_wmfile, erode_wmfile, resample_wmfile, wmcovars_file = [None] * 4
+    (native_vtsfile, erode_vtsfile, resample_vtsfile,
+     vtscovars_file) = [None] * 4
 
 """
 Step 3: Update/Normalize Motion Parameters
 """
-completed_rpfile = update_rpfile(
-    rpile=inputs["rpfile"],
-    covars_files=[wmcovars_file, vtscovars_file],
-    outdir=subjdir,
-    add_extra_mvt_reg=True)
+if deformationfile is not None:
+    completed_rpfile = update_rpfile(
+        rpile=inputs["rpfile"],
+        covars_files=[wmcovars_file, vtscovars_file],
+        outdir=subjdir,
+        add_extra_mvt_reg=True)
+else:
+    completed_rpfile = inputs["rpfile"]
 norm_rpfile = normalize_array(
     filepath=completed_rpfile,
     outdir=subjdir)
@@ -327,9 +348,13 @@ with open(inputs["contrasts"], "rt") as open_file:
 """
 Update the outputs and save them and the inputs in a 'logs' directory.
 """
-os.remove(deformationfile)
-for path in fmrisessions:
-    os.remove(path)
+if inputs["gzonly"]:
+    if deformationfile is not None:
+        os.remove(deformationfile)
+    if maskfile is not None:
+        os.remove(maskfile)
+    for path in fmrisessions:
+        os.remove(path)
 logdir = os.path.join(subjdir, "logs")
 if not os.path.isdir(logdir):
     os.mkdir(logdir)

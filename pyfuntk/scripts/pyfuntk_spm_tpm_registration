@@ -15,6 +15,8 @@ import shutil
 from datetime import datetime
 import json
 from pprint import pprint
+import textwrap
+from argparse import RawTextHelpFormatter
 
 # Bredala import
 try:
@@ -26,6 +28,8 @@ try:
                      names=["spm_normalize"])
     bredala.register("pyconnectome.utils.segtools",
                      names=["bet2"])
+    bredala.register("pydcmio.plotting.slicer",
+                     names=["mosaic"])
 except:
     pass
 
@@ -39,15 +43,17 @@ from pyfuntk.preproc.registration import spm_normalize
 # Pyconnectome import
 from pyconnectome import DEFAULT_FSL_PATH
 
+# Pydcmio import
+from pydcmio.plotting.slicer import mosaic
+
 
 # Parameters to keep trace
 __hopla__ = ["runtime", "inputs", "outputs"]
 
 
 # Script documentation
-doc = """
+DOC = """
 SPM tissue probability map registration
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Perform the SPM unified registration.
 
@@ -93,62 +99,95 @@ def is_directory(dirarg):
             "The directory '{0}' does not exist!".format(dirarg))
     return dirarg
 
+def get_cmd_line_args():
+    """
+    Create a command line argument parser and return a dict mapping
+    <argument name> -> <argument value>.
+    """
+    parser = argparse.ArgumentParser(
+        prog="pyconnectome_register",
+        description=textwrap.dedent(DOC),
+        formatter_class=RawTextHelpFormatter)
 
-parser = argparse.ArgumentParser(description=doc)
-parser.add_argument(
-    "-v", "--verbose", dest="verbose", type=int, choices=[0, 1, 2], default=0,
-    help="increase the verbosity level: 0 silent, [1, 2] verbose.")
-parser.add_argument(
-    "-e", "--erase", dest="erase", action="store_true",
-    help="if activated, clean the result folder if already created.")
-parser.add_argument(
-    "-o", "--outdir", dest="outdir", metavar="PATH", type=is_directory,
-    help="the analysis output directory.")
-parser.add_argument(
-    "-d", "--spmbin", dest="spmbin", type=is_file,
-    help="path to the SPM standalone file.")
-parser.add_argument(
-    "-s", "--sid", dest="sid", required=True,
-    help="the subject identifier.")
-parser.add_argument(
-    "-i", "--inputfile", dest="inputfile", type=is_file,
-    required=True, help="the input MRI volume.")
-parser.add_argument(
-    "-t", "--tpmfile", dest="tpmfile", type=is_file,
-    required=True, help="the path to the SPM Tissue Probabilty Map file.")
-parser.add_argument(
-    "-n", "--newsegment", dest="newsegment", action="store_true",
-    help="if set, use the NewSegment routine and generate Dartel inputs.")
-parser.add_argument(
-    "-b", "--brainextract", dest="brainextract", action="store_true",
-    help="if set, use the BET2 routine to segment the subject brain.")
-parser.add_argument(
-    "-f", "--brainthr", dest="brainthr", type=float, default=0.5,
-    help="the BET2 fractional intensity threshold (0->1).")
-parser.add_argument(
-    "-x", "--extrafiles", dest="extrafiles", type=is_file, nargs="*",
-    help="list of files to apply transform to.")
-parser.add_argument(
-    "-c", "--fslconfig", dest="fslconfig", type=is_file,
-    help="path to the FSL configuration file.")
-args = parser.parse_args()
-inputs = vars(args)
-verbose = inputs.pop("verbose")
+    # Required arguments
+    required = parser.add_argument_group("required arguments")
+    required.add_argument(
+        "-s", "--sid",
+        required=True,
+        help="the subject identifier.")
+    required.add_argument(
+        "-i", "--inputfile",
+        required=True, type=is_file,
+        help="the input MRI (brain only or not) volume.")
+    required.add_argument(
+        "-t", "--tpmfile",
+        required=True, type=is_file,
+        help="the path to the SPM Tissue Probabilty Map file.")
+    parser.add_argument(
+        "-o", "--outdir",
+        required=True, metavar="<path>", type=is_directory,
+        help="the analysis output directory.")
+
+    # Optional arguments
+    parser.add_argument(
+        "-v", "--verbose",
+        type=int, choices=[0, 1, 2], default=0,
+        help="increase the verbosity level: 0 silent, [1, 2] verbose.")
+    parser.add_argument(
+        "-e", "--erase",
+        action="store_true",
+        help="if activated, clean the result folder if already created.")
+    parser.add_argument(
+        "-d", "--spmbin",
+        type=is_file,
+        help="path to the SPM standalone file.")
+    parser.add_argument(
+        "-n", "--newsegment",
+        action="store_true",
+        help="if set, use the NewSegment routine and generate Dartel inputs.")
+    parser.add_argument(
+        "-b", "--brainextract",
+        action="store_true",
+        help="if set, use the BET2 routine to segment the subject brain.")
+    parser.add_argument(
+        "-f", "--brainthr",
+        type=float, default=0.5,
+        help="the BET2 fractional intensity threshold (0->1).")
+    parser.add_argument(
+        "-x", "--extrafiles",
+        type=is_file, nargs="*",
+        help="list of files to apply transform to.")
+    required.add_argument(
+        "-r", "--referencefile", 
+        type=is_file,
+        help="is set, create a snap to assess the registration quality.")
+    parser.add_argument(
+        "-c", "--fsl-sh",
+        type=is_file,
+        help="path to the FSL configuration file.")
+
+    # Create a dict of arguments to pass to the 'main' function
+    args = parser.parse_args()
+    kwargs = vars(args)
+    verbose = kwargs.pop("verbose")
+    if kwargs["fsl_sh"] is None:
+        kwargs["fsl_sh"] = DEFAULT_FSL_PATH
+    if kwargs["spmbin"] is None:
+        kwargs["spmbin"] = DEFAULT_SPM_STANDALONE_PATH
+
+    return kwargs, verbose
 
 
 """
-First construct the subject working directory and check its existance on
-the file system.
+Parse the command line.
 """
+inputs, verbose = get_cmd_line_args()
 tool = "pyfuntk_spm_tpm_registration"
 timestamp = datetime.now().isoformat()
 tool_version = version
-spmbin = args.spmbin or DEFAULT_SPM_STANDALONE_PATH
-fslconfig = args.fslconfig or DEFAULT_FSL_PATH
 params = locals()
 runtime = dict([(name, params[name])
-               for name in ("tool", "tool_version", "spmbin", "timestamp",
-                            "fslconfig")])
+               for name in ("tool", "tool_version", "timestamp")])
 outputs = None
 subjdir = os.path.join(inputs["outdir"], inputs["sid"])
 if inputs["erase"] and os.path.isdir(subjdir):
@@ -169,7 +208,6 @@ extrafiles = ungzip_list_of_files(
     prefix="u",
     outdir=subjdir)
 
-
 """
 Step 2: Image registration & segmentation
 """
@@ -182,8 +220,14 @@ Step 2: Image registration & segmentation
     extract_brain=inputs["brainextract"],
     extract_brain_thr=inputs["brainthr"],
     extra_files=extrafiles,
-    spmbin=spmbin,
-    fslconfig=fslconfig)
+    spmbin=inputs["spmbin"],
+    fslconfig=inputs["fsl_sh"])
+if inputs["referencefile"] is not None:
+    snap = mosaic(
+        impath=inputs["referencefile"],
+        overlay=normalized_file,
+        title="spm_registration",
+        outdir=subjdir)
 
 
 """
@@ -195,7 +239,7 @@ if not os.path.isdir(logdir):
 params = locals()
 outputs = dict([(name, params[name])
                for name in ("deformation_file", "normalized_file",
-                            "dartel_files")])
+                            "dartel_files", "snap")])
 for name, final_struct in [("inputs", inputs), ("outputs", outputs),
                            ("runtime", runtime)]:
     log_file = os.path.join(logdir, "{0}.json".format(name))
