@@ -228,6 +228,8 @@ if inputs["referencefile"] is not None:
         overlay=normalized_file,
         title="spm_registration",
         outdir=subjdir)
+else:
+    snap = None
 
 
 """
